@@ -24,7 +24,7 @@ mainloop = None
 wsclient = None
 
 # If false, the program can be run without a valid websocket
-use_websocket = False
+use_websocket = True
 
 def print_message(msg):
 	print(msg)
