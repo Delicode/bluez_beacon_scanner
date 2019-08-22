@@ -5,21 +5,16 @@ from __future__ import absolute_import, print_function, unicode_literals
 from optparse import OptionParser, make_option
 import dbus
 import dbus.mainloop.glib
+
 try:
 	from gi.repository import GLib
 except ImportError:
 	import gobject as GObject
+
 import bluezutils
 import json
 import sys
-
 import websocket
-
-#try:
-#	import thread
-#except ImportError:
-#	import _thread as thread
-
 from threading import Thread
 import time
 
@@ -28,15 +23,24 @@ devices = {}
 mainloop = None
 wsclient = None
 
+# If false, the program can be run without a valid websocket
+use_websocket = False
+
+def print_message(msg):
+	print(msg)
+	sys.stdout.flush()
+
 class WebsocketControl:
 	ws = None
 	port = 0
 	url = ""
+	ws_id = ""
 
-	def __init__(self, p_url, p_port):
+	def __init__(self, p_url, p_port, p_wsid):
 		self.port = p_port
+		self.wsid = p_wsid
 		self.url = p_url + ":" + str(self.port)
-		print("opening websocket to: " + self.url)
+		print_message("opening websocket to: " + self.url)
 
 		self.ws = websocket.WebSocketApp(self.url,
 			header = None,
@@ -45,30 +49,46 @@ class WebsocketControl:
 			on_error = self.on_error,
 			on_close = self.on_close)
 
-		websocket.enableTrace(True)
+		websocket.enableTrace(False)
 
 	def run_ws(self):
 		Thread(target=self.ws.run_forever).start()
-		print("websocket thread returned")
+		print_message("websocket thread returned")
 
 	def on_message(ws, message):
-		print("websocket message: " + str(message))
+		print_message("websocket message: " + str(message))
 
 	def on_error(ws, error):
-		print("websocket error: " + str(error))
+		print_message("websocket error: " + str(error))
 
 		# tell the websocket to exit in case it hasn't
 		global wsclient
 		wsclient.ws.close()
 
+		global use_websocket
+		if use_websocket == False:
+			return
+
 		# close the glib mainloop as it would hang the process
 		mainloop.quit()
 
 	def on_close(ws):
-		print("websocket closed")
+		print_message("websocket closed")
 
 	def on_open(ws):
-		print("webssocket opened")
+		print_message("webssocket opened")
+		global wsclient
+
+		out_msg = dict()
+		contents = dict()
+		contents["name"] = "ble-scanner"
+		contents["client_type"] = "ble"
+		contents["ws_id"] = wsclient.wsid
+
+		out_msg["type"] = "hello"
+		out_msg["message"] = contents
+
+		wsclient.ws.send(json.dumps(out_msg))
 
 def dbus_to_python(data):
 	'''
@@ -94,7 +114,9 @@ def dbus_to_python(data):
 		data = new_data
 	return data
 
-def print_normal(address, properties):
+def parse_data(address, properties):
+
+	global wsclient
 
 	out = dict()
 	out["address"] = str(dbus_to_python(address))
@@ -106,22 +128,23 @@ def print_normal(address, properties):
 			pval = dbus_to_python(value)
 
 			if key == "RSSI":
-				out["RSSI"] = str(value)
+				out["rssi"] = int(value)
 			elif key == "ManufacturerData":
 
 				# dictionary with an integer key and an array of bytes value
 				manuinfo = dict()
 
 				vendor = key
-				identifier = [0]
+				identifier = []
 
 				for k in pval:
 					manuinfo["vendor"] = dbus_to_python(k)
 					for b in pval[k]:
+						temp = dbus_to_python(b)
 						identifier.append(int(dbus_to_python(b)))
 
-				manuinfo["identifier"] = str(identifier)
-				out["ManufacturerData"] = manuinfo
+				manuinfo["data"] = str(identifier)
+				out["manufacturerData"] = manuinfo
 			elif key == "ServiceData":
 
 				# dictionary with string key and an array of bytes
@@ -130,19 +153,33 @@ def print_normal(address, properties):
 				arr = []
 
 				for k in pval:
-					servicedata["identifier"] = dbus_to_python(k)
+					uuid = dbus_to_python(k)
+					if len(uuid) < 8:
+						print_message("invalid uuid format: " + str(uuid))
+						return
+
+					# extract the 16-bit UUID from the 128-bit UUID
+					servicedata["uuid"] = uuid[4:8]
 
 					for b in pval[k]:
 						arr.append(int(dbus_to_python(b)))
 
-				servicedata["uuid"] = arr
-				out["ServiceData"] = servicedata
+				servicedata["data"] = arr
+				out["serviceData"] = [servicedata]
 		except Exception as e:
-			print("Failed parsing data: " + str(e))
+			print_message("Failed parsing data: " + str(e))
 
 	properties["Logged"] = True
 
-	print(json.dumps(out))
+	out_msg = dict()
+	out_msg["type"] = "ble-discovery"
+	out_msg["message"] = out
+
+	global use_websocket
+	if use_websocket:
+		wsclient.ws.send(json.dumps(out_msg))
+
+	print_message(json.dumps(out))
 
 def interfaces_added(path, interfaces):
 	properties = interfaces["org.bluez.Device1"]
@@ -161,7 +198,7 @@ def interfaces_added(path, interfaces):
 	else:
 		address = "<unknown>"
 
-	print_normal(address, devices[path])
+	parse_data(address, devices[path])
 
 def properties_changed(interface, changed, invalidated, path):
 	if interface != "org.bluez.Device1":
@@ -179,15 +216,19 @@ def properties_changed(interface, changed, invalidated, path):
 	else:
 		address = "<unknown>"
 
-	print_normal(address, devices[path])
+	parse_data(address, devices[path])
 
 if __name__ == '__main__':
 
 	# get websocket port from args
 	option_list = [
 		make_option("-p", "--port", dest="port",
-			help='port of a websocket server where this program connects in localost)',
-			type=int, default=0)
+			help='port of a websocket server where this program connects in localhost',
+			type=int, default=0),
+		make_option("-w", "--wsid", dest="wsid",
+			help='identifier used when connecting to a websocket server in localhost',
+			type=str, default=""),
+
 	]
 
 	parser = OptionParser(option_list=option_list)
@@ -197,12 +238,20 @@ if __name__ == '__main__':
 	try:
 		port = int(options.port)
 	except Exception as e:
-		print("Invalid port number given: " + str(p))
+		print_message("Invalid port number given: " + str(p))
 		sys.exit(1)
 
 	if port <= 0:
-		print("Must specify a valid websocket port in arguments")
+		print_message("Must specify a valid websocket port in arguments")
 		sys.exit(1)
+
+	wsid = options.wsid
+
+	if len(wsid) == 0:
+		print_message("Expecting parameter wsid to be non-empty")
+		sys.exit(1)
+
+	print_message("ble scanner connecting to port: " + str(port))
 
 	# initialize dbus for ble scanning
 	dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
@@ -234,15 +283,15 @@ if __name__ == '__main__':
 
 	mainloop = GLib.MainLoop()
 
-	print("starting websocket")
-	wsclient = WebsocketControl("ws://localhost", port)
+	print_message("starting websocket")
+	wsclient = WebsocketControl("ws://localhost", port, wsid)
 
 	Thread(target=wsclient.run_ws).start()
 
-	print("starting dlib mainloop")
+	print_message("starting dlib mainloop")
 
 	mainloop.run()
-	print("dlib mainloop returned")
+	print_message("dlib mainloop returned")
 
 	# just in case the websocket is still open
 	wsclient.ws.close()
