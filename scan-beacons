@@ -52,11 +52,31 @@ class WebsocketControl:
 		websocket.enableTrace(False)
 
 	def run_ws(self):
-		Thread(target=self.ws.run_forever).start()
+		Thread(target=self.ws.run_forever, kwargs=dict(ping_interval=10)).start()
 		print_message("websocket thread returned")
 
 	def on_message(ws, message):
-		print_message("websocket message: " + str(message))
+		print("got message: " + str(message))
+		js_data = None
+
+		try:
+			js_data = json.loads(message)
+		except Exception as e:
+			print("Exception parsing received message as JSON: " + str(e))
+			return
+
+		if "type" not in js_data:
+			print("no type in received websocket message: " + str(message))
+			return
+
+		global wsclient
+
+		if js_data["type"] == "ping":
+			msg = dict()
+			msg["type"] = "pong"
+			msg["message"] = dict()
+			wsclient.ws.send(json.dumps(msg))
+			return
 
 	def on_error(ws, error):
 		print_message("websocket error: " + str(error))
