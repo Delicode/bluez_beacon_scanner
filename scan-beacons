@@ -138,7 +138,7 @@ def parse_data(address, properties):
 	global wsclient
 
 	out = dict()
-	out["address"] = str(dbus_to_python(address))
+	out["id"] = str(dbus_to_python(address))
 
 	for key in properties.keys():
 		try:
@@ -162,7 +162,7 @@ def parse_data(address, properties):
 						temp = dbus_to_python(b)
 						identifier.append(int(dbus_to_python(b)))
 
-				manuinfo["data"] = str(identifier)
+				manuinfo["data"] = identifier
 				out["manufacturerData"] = manuinfo
 			elif key == "ServiceData":
 
@@ -198,7 +198,7 @@ def parse_data(address, properties):
 	if use_websocket:
 		wsclient.ws.send(json.dumps(out_msg))
 
-	print_message(json.dumps(out))
+	#print_message(json.dumps(out))
 
 def interfaces_added(path, interfaces):
 	properties = interfaces["org.bluez.Device1"]
