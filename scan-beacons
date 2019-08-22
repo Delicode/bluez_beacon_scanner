@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 from __future__ import absolute_import, print_function, unicode_literals
 
@@ -6,50 +6,54 @@ from optparse import OptionParser, make_option
 import dbus
 import dbus.mainloop.glib
 try:
-  from gi.repository import GObject
+	from gi.repository import GLib
 except ImportError:
-  import gobject as GObject
+	import gobject as GObject
 import bluezutils
+import json
+import websockets
+import asyncio
+import sys
 
 devices = {}
 
 def dbus_to_python(data):
-    '''
-        convert dbus data types to python native data types
-    '''
+	'''
+		convert dbus data types to python native data types
+	'''
 
-    if isinstance(data, dbus.Byte):
-        data = int(data)
-    elif isinstance(data, dbus.String):
-        data = unicode(data).encode('ascii', 'replace')
-    elif isinstance(data, dbus.Boolean):
-        data = bool(data)
-    elif isinstance(data, dbus.Double):
-        data = float(data)
-    elif isinstance(data, dbus.Array):
-        data = [dbus_to_python(value) for value in data]
-    elif isinstance(data, (dbus.Int16, dbus.UInt16, dbus.Int32, dbus.UInt32, dbus.Int64, dbus.UInt64)):
+	if isinstance(data, dbus.Byte):
 		data = int(data)
-    elif isinstance(data, dbus.Dictionary):
-        new_data = dict()
-        for key in data.keys():
-            new_data[key] = dbus_to_python(data[key])
-        data = new_data
-    return data
+	elif isinstance(data, dbus.String):
+		data = str(data)
+	elif isinstance(data, dbus.Boolean):
+		data = bool(data)
+	elif isinstance(data, dbus.Double):
+		data = float(data)
+	elif isinstance(data, dbus.Array):
+		data = [dbus_to_python(value) for value in data]
+	elif isinstance(data, (dbus.Int16, dbus.UInt16, dbus.Int32, dbus.UInt32, dbus.Int64, dbus.UInt64)):
+		data = int(data)
+	elif isinstance(data, dbus.Dictionary):
+		new_data = dict()
+		for key in data.keys():
+			new_data[key] = dbus_to_python(data[key])
+		data = new_data
+	return data
 
 def print_normal(address, properties):
 
 	out = dict()
-	out["address"] = dbus_to_python(address)
+	out["address"] = str(dbus_to_python(address))
 
 	for key in properties.keys():
 		try:
 			pkey = dbus_to_python(key)
 			value = properties[key]
-			pval = dbus_to_python(value);
+			pval = dbus_to_python(value)
 
 			if key == "RSSI":
-				out[pkey] = str(value)
+				out["RSSI"] = str(value)
 			elif key == "ManufacturerData":
 
 				# dictionary with an integer key and an array of bytes value
@@ -57,13 +61,14 @@ def print_normal(address, properties):
 
 				vendor = key
 				identifier = [0]
+
 				for k in pval:
 					manuinfo["vendor"] = dbus_to_python(k)
 					for b in pval[k]:
-						identifier.append(dbus_to_python(b))
+						identifier.append(int(dbus_to_python(b)))
 
-				manuinfo["identifier"] = identifier
-				out[pkey] = manuinfo
+				manuinfo["identifier"] = str(identifier)
+				out["ManufacturerData"] = manuinfo
 			elif key == "ServiceData":
 
 				# dictionary with string key and an array of bytes
@@ -75,15 +80,16 @@ def print_normal(address, properties):
 					servicedata["identifier"] = dbus_to_python(k)
 
 					for b in pval[k]:
-						arr.append(dbus_to_python(b))
+						arr.append(int(dbus_to_python(b)))
 
 				servicedata["uuid"] = arr
-				out[pkey] = servicedata
+				out["ServiceData"] = servicedata
 		except Exception as e:
 			print("Failed parsing data: " + str(e))
 
 	properties["Logged"] = True
-	print(out)
+
+	print(json.dumps(out))
 
 def interfaces_added(path, interfaces):
 	properties = interfaces["org.bluez.Device1"]
@@ -92,7 +98,8 @@ def interfaces_added(path, interfaces):
 
 	if path in devices:
 		dev = devices[path]
-		devices[path] = dict(devices[path].items() + properties.items())
+		# combine the dictionaries
+		devices[path] = {**devices[path], **properties}
 	else:
 		devices[path] = properties
 
@@ -109,7 +116,8 @@ def properties_changed(interface, changed, invalidated, path):
 
 	if path in devices:
 		dev = devices[path]
-		devices[path] = dict(devices[path].items() + changed.items())
+		# combine the dictionaries
+		devices[path] = {**devices[path], **changed}
 	else:
 		devices[path] = changed
 
@@ -121,6 +129,28 @@ def properties_changed(interface, changed, invalidated, path):
 	print_normal(address, devices[path])
 
 if __name__ == '__main__':
+
+	# get websocket port from args
+	option_list = [
+		make_option("-p", "--port", dest="port",
+			help='port of a websocket server where this program connects in localost)',
+			type=int, default=0)
+	]
+
+	parser = OptionParser(option_list=option_list)
+	(options, args) = parser.parse_args()
+
+	port = 0
+	try:
+		port = int(options.port)
+	except Exception as e:
+		print("Invalid port number given: " + str(p))
+		sys.exit(1)
+
+	if port == 0:
+		print("Must specify websocket port in arguments")
+		sys.exit(1)
+
 	dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
 	bus = dbus.SystemBus()
@@ -139,13 +169,15 @@ if __name__ == '__main__':
 
 	om = dbus.Interface(bus.get_object("org.bluez", "/"),
 				"org.freedesktop.DBus.ObjectManager")
+
 	objects = om.GetManagedObjects()
-	for path, interfaces in objects.iteritems():
+
+	for path, interfaces in objects.items():
 		if "org.bluez.Device1" in interfaces:
 			devices[path] = interfaces["org.bluez.Device1"]
 
 	adapter.SetDiscoveryFilter(dict())
 	adapter.StartDiscovery()
 
-	mainloop = GObject.MainLoop()
+	mainloop = GLib.MainLoop()
 	mainloop.run()
