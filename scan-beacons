@@ -11,11 +11,64 @@ except ImportError:
 	import gobject as GObject
 import bluezutils
 import json
-import websockets
-import asyncio
 import sys
 
+import websocket
+
+#try:
+#	import thread
+#except ImportError:
+#	import _thread as thread
+
+from threading import Thread
+import time
+
+# Container for discovered BLE devices
 devices = {}
+mainloop = None
+wsclient = None
+
+class WebsocketControl:
+	ws = None
+	port = 0
+	url = ""
+
+	def __init__(self, p_url, p_port):
+		self.port = p_port
+		self.url = p_url + ":" + str(self.port)
+		print("opening websocket to: " + self.url)
+
+		self.ws = websocket.WebSocketApp(self.url,
+			header = None,
+			on_open = self.on_open,
+			on_message = self.on_message,
+			on_error = self.on_error,
+			on_close = self.on_close)
+
+		websocket.enableTrace(True)
+
+	def run_ws(self):
+		Thread(target=self.ws.run_forever).start()
+		print("websocket thread returned")
+
+	def on_message(ws, message):
+		print("websocket message: " + str(message))
+
+	def on_error(ws, error):
+		print("websocket error: " + str(error))
+
+		# tell the websocket to exit in case it hasn't
+		global wsclient
+		wsclient.ws.close()
+
+		# close the glib mainloop as it would hang the process
+		mainloop.quit()
+
+	def on_close(ws):
+		print("websocket closed")
+
+	def on_open(ws):
+		print("webssocket opened")
 
 def dbus_to_python(data):
 	'''
@@ -147,12 +200,12 @@ if __name__ == '__main__':
 		print("Invalid port number given: " + str(p))
 		sys.exit(1)
 
-	if port == 0:
-		print("Must specify websocket port in arguments")
+	if port <= 0:
+		print("Must specify a valid websocket port in arguments")
 		sys.exit(1)
 
+	# initialize dbus for ble scanning
 	dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-
 	bus = dbus.SystemBus()
 
 	adapter = bluezutils.find_adapter(None)
@@ -180,4 +233,17 @@ if __name__ == '__main__':
 	adapter.StartDiscovery()
 
 	mainloop = GLib.MainLoop()
+
+	print("starting websocket")
+	wsclient = WebsocketControl("ws://localhost", port)
+
+	Thread(target=wsclient.run_ws).start()
+
+	print("starting dlib mainloop")
+
 	mainloop.run()
+	print("dlib mainloop returned")
+
+	# just in case the websocket is still open
+	wsclient.ws.close()
+
