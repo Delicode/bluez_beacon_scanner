@@ -56,7 +56,6 @@ class WebsocketControl:
 		print_message("websocket thread returned")
 
 	def on_message(ws, message):
-		print("got message: " + str(message))
 		js_data = None
 
 		try:
